@@ -7,8 +7,8 @@ homebrew devkit.
 ## Features
 
 - Continuous, angle-based movement (turn left/right, not grid-based Snake)
-- Effectively unlimited snake length: the most recent 30 segments are
-  smooth-moving sprites, and everything older is permanently baked onto the
+- Very long snakes (up to 504 segments): the most recent 30 segments are
+  smooth-moving sprites, and everything older is drawn pixel-for-pixel into the
   background layer as the snake grows past the SNES's sprite limits — see
   "How the long tail works" below
 - Pizzas of two sizes/point values, randomly spawned
@@ -26,13 +26,16 @@ homebrew devkit.
 | `psnake.c`             | Main game source                                                  |
 | `hdr.asm`               | SNES ROM header (title, mapping mode, etc.)                       |
 | `data.asm`              | Links the compiled graphics/palette data into the ROM              |
+| `canvas.inc`            | Tail-canvas WRAM layout and the hand-written 65816 stamping routine (included by `data.asm`) |
+| `body_dot.inc`          | Generated: the body-dot footprint used by `canvas.inc`             |
+| `check_ram.py`          | Post-link check that fails the build if WRAM sections overlap       |
 | `Makefile`              | Build script                                                      |
-| `gen_sprites.py`        | Generates `sprites.bmp` (snake head/body/pizza sprite sheet)        |
-| `gen_tiles.py`          | Generates `tiles1.bmp` (font, wall, and baked-tail background tiles) |
+| `gen_sprites.py`        | Generates `sprites.bmp` (snake head/body/pizza sprite sheet) and `body_dot.inc`; the single definition of the body shape |
+| `gen_tiles.py`          | Generates `tiles1.bmp` (font and wall tiles) and reserves the tail canvas' tile range |
 | `gen_trig.py`           | Generates `trig_table.h` (sin/cos lookup table for movement)       |
 
 Running `make` regenerates `sprites.bmp`, `tiles1.bmp`, `trig_table.h`,
-`sprite_tiles.h`, and `tiles_charmap.h` automatically via the three Python
+`sprite_tiles.h`, `body_dot.inc` and `tiles_charmap.h` automatically via the three Python
 scripts above, then converts the bitmaps to SNES tile data and compiles the
 ROM — you don't need to run the Python scripts yourself unless you want to
 edit the generated art/tables directly.
@@ -73,8 +76,9 @@ cores) or on real hardware via a flashcart (SD2SNES/FXPak, Super Everdrive,
 etc).
 
 `make clean` removes build artifacts (does not delete the generated
-`.bmp`/`.h` asset files — delete those manually if you want a fully fresh
-regeneration from the Python scripts).
+`.bmp`/`.h`/`.inc` asset files — delete those manually if you want a fully fresh
+regeneration from the Python scripts). The build ends by running
+`check_ram.py`, which fails if any WRAM sections overlap.
 
 ## Controls
 
@@ -117,29 +121,51 @@ To **reset the table**, delete the `.srm` file.
 
 The SNES can only display 128 hardware sprites at once -- and, more
 restrictively, only **32 on any one scanline** -- so a snake that's allowed to
-grow indefinitely can't be *all* sprites forever. The most recent 30 segments
-(nearest the head) are rendered as sprites and move smoothly every frame
-(`SPRITE_WINDOW`). Once a segment ages further back than that, it's permanently
-"baked" onto the background tilemap — and since the snake's length only
-changes when it eats (not with distance travelled), the *oldest* baked
-segment is erased at the same rate new ones are added, keeping the total
-length correctly matched to your score.
+grow can't be *all* sprites. The most recent 30 segments (nearest the head) are
+rendered as sprites and move smoothly every frame (`SPRITE_WINDOW`). Once a
+segment ages further back than that, it is drawn into the background layer
+instead, and since the snake's length only changes when it eats (not with
+distance travelled), the *oldest* background segment is erased at the same
+rate new ones are added, keeping the total length matched to your score.
 
-Each baked tile is chosen by exactly where the path enters and exits that
-8×8 tile — packed as (edge, position-along-edge) rather than a raw pixel
-coordinate, since a point sitting exactly at a tile's corner is genuinely
-ambiguous as a bare coordinate. Every one of the resulting 32×32 possible
-touch-point combinations has its own generated connector shape (reduced to
-144 unique physical tiles via hflip/vflip, the only symmetries SNES
-actually gives for free), looked up with a single table index — so the
-baked tail matches the snake's real recorded path pixel-for-pixel instead
-of snapping every turn to one of a handful of fixed shapes, while staying
-just as cheap at runtime as the simpler version: one lookup, no drawing.
-Whichever cell is entered borrows its touch point from the cell being
-exited, so the two always agree exactly on the shared boundary; the rare
-case where the path clips a tile corner between two samples (skipping the
-cell that would normally connect them) is resolved by interpolating the
-skipped crossing instead of leaving a gap.
+**The background layer is a pixel canvas.** Each of the 30×24 playfield cells
+owns its own tile in VRAM (`TILE_CANVAS_BASE + cell`), and the tilemap points
+at those tiles for the whole game. Every frame the game *stamps* the same 5×5
+dot the body sprites use (one definition, in `gen_sprites.py`) at the trail
+sample that just aged out of the sprite window, and *un-stamps* the dot at the
+sample that just fell off the tail's end. The background tail is therefore the
+union of exactly the dots the sprites would have drawn: same width, same
+edges, same path, pixel for pixel, with no tile seams to line up and a tail tip
+that retreats one pixel at a time instead of one 8×8 cell at a time.
+
+(An earlier version chose each background tile from a library of pre-drawn
+connector shapes keyed by where the path entered and left the cell. That can't
+encode sub-pixel position or direction, so the baked part came out about a
+pixel thinner than the sprite part, with notches, kinks and wandering edges.)
+
+Because dots overlap, a pixel can't simply be cleared when one dot leaves; it
+must stay lit while any other dot still covers it. So each pixel keeps a count
+of the dots covering it, stored as four bit-planes so that adding or removing a
+row of up to 5 pixels is a short ripple-carry over bytes. The counts, and a
+second array holding the ready-to-DMA VRAM tiles, live in WRAM bank `$7F` in
+the same 4bpp layout as tile data, so one index addresses both. Changed cells
+are queued (each at most once) and up to 16 per frame are DMA'd straight from
+that array during vblank; a frame normally changes 6–8. The stamping routine
+(`canvasStampDot` in `canvas.inc`) is hand-written 65816: the C compiler's
+version of the same loop took longer than a whole frame.
+
+Collision with the baked tail is a single pixel lookup: you die if the head's
+centre is on a pixel of the baked body, the same rule the sample-position check
+applies to the sprite part, so what you see is what kills you.
+
+Edge cases handled: dots that overlap the wall outline at the arena edge are
+clipped (the wall tile is opaque, so sprites never showed those pixels
+either); the sample cursors are compared modulo 65536 so `snakeAge` wrapping
+(after ~18 minutes of continuous play) is harmless; while the snake is younger
+than the bake delay the cursor is held at sample 0, so the spawn-point filler
+in the trail buffer is never stamped repeatedly; and `MAX_LEN` (504 segments)
+is derived from `TRAILSIZE`, because un-stamping a dot re-reads its position
+from the trail buffer, which only remembers `TRAILSIZE` samples.
 
 ## Performance notes (keeping 60 fps)
 
@@ -165,15 +191,33 @@ reintroduce by accident:
   the snake makes. Collisions deliberately use a *separate* window
   (`COLLIDE_WINDOW`), so dying doesn't depend on how many sprites we can draw.
   Baking starts `SPRITE_OVERLAP` segments before the sprites run out, because
-  sprites sit behind BG tiles and the overlap hides the lag in writing the
-  newest baked tile.
+  sprites sit behind BG tiles and the baked dots simply cover the sprites
+  beneath them, keeping the hand-off clear of the moving end of the sprite chain.
+- **Hot loops that go through 24-bit pointers belong in assembly.** 816-tcc
+  turns every `p[i]` through a far pointer into about ten instructions. The
+  C version of the canvas stamping cost more than a whole frame (the game ran
+  at ~57% speed); the assembly version costs a few thousand cycles.
+- **WRAM layout.** C globals live in `.bss` from `$7E:2000`, but pvsneslib's own
+  RAM (console buffer, OAM shadow buffer, ...) is fixed at `$7E:8000` and up, so
+  only ~24 KB of `$7E` is available to C. wla-link does **not** warn when `.bss`
+  grows into the library's sections; the ROM builds and then corrupts memory.
+  Arrays of any size belong in bank `$7F` (as the canvas does, via
+  `canvas.inc`), and `check_ram.py` now runs after every link and fails the
+  build on any WRAM overlap.
 
 Before this was fixed, every `% TRAILSIZE`/`% 32` in the per-segment and
 per-tile paths, the 32-bit diagonal-tile maths, and the number formatting
 added up to more than one frame once the snake passed ~45 segments, and the
-game dropped to half speed for the rest of the round. The worst frame now
-uses roughly 190 of ~257 available scanlines with a long snake. If you add
-per-frame work, `lag_frame_counter` (pvsneslib) counts frames that overran.
+game dropped to half speed for the rest of the round. Measured in snes9x
+(scripted bot, 150–400-segment snakes, several thousand frames), the frame's CPU
+work ends at about scanline 120 on average and 184 at worst, against 225 where
+vblank starts, with zero lagged frames; the previous tile-based tail averaged
+about 91 and peaked at 139, so the pixel canvas costs roughly 30 scanlines more
+per frame. The vblank tile uploads finish by scanline ~256 of 261 in the worst
+case (typically ~243); `flushUploads()` checks the vblank flag before each tile,
+so a burst can never write outside vblank -- the leftovers just go out next
+frame. If you add per-frame work, `lag_frame_counter` (pvsneslib) counts frames
+that overran.
 
 ## Music
 

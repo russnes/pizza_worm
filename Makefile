@@ -11,17 +11,21 @@ SMCONVFLAGS := -s -o $(SOUNDBANK) -V -b 5
 
 include ${PVSNESLIB_HOME}/devkitsnes/snes_rules
 
-.PHONY: bitmaps all musics
+.PHONY: bitmaps all musics checkram
 
 #---------------------------------------------------------------------------------
 export ROMNAME := pizzasnake
 
-all: bitmaps musics $(ROMNAME).sfc
+all: bitmaps musics $(ROMNAME).sfc checkram
 
 clean: cleanBuildRes cleanRom cleanGfx cleanAudio
 
+# wla-link does not notice when the C .bss runs into pvsneslib's RAM; this does (see check_ram.py)
+checkram: $(ROMNAME).sfc
+	@python3 check_ram.py $(ROMNAME).sym
+
 #---------------------------------------------------------------------------------
-sprites.bmp sprite_tiles.h: gen_sprites.py
+sprites.bmp sprite_tiles.h body_dot.inc: gen_sprites.py
 	@echo generating sprite sheet ...
 	python3 gen_sprites.py
 
@@ -45,6 +49,9 @@ splash.pic splash.map splash.pal: splash.bmp
 	@echo convert splash bitmap ... $(notdir $@)
 	$(GFXCONV) -s 8 -o 16 -u 16 -p -m -R -t bmp -i $<
 
-bitmaps : sprites.pic tiles1.pic splash.pic trig_table.h sprite_tiles.h tiles_charmap.h
+bitmaps : sprites.pic tiles1.pic splash.pic trig_table.h sprite_tiles.h body_dot.inc tiles_charmap.h
+
+# data.asm pulls these in with .include, so rebuild it when they change
+data.obj: body_dot.inc canvas.inc
 
 musics: $(SOUNDBANK).asm

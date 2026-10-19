@@ -18,3 +18,5 @@ palsplash_end:
 mapsplash: .incbin "splash.map"
 mapsplash_end:
 .ends
+
+.include "canvas.inc"
