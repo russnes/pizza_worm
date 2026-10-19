@@ -1,5 +1,5 @@
 /*---------------------------------------------------------------------------------
-    PIZZA SNAKE - SNES
+    PIZZA WORM - SNES
 ---------------------------------------------------------------------------------*/
 #include <snes.h>
 #include <string.h>
@@ -1059,7 +1059,7 @@ void hiScoresScreen(void)
 void titleScreen(void)
 {
     drawWalls();
-    writeText(10, 8, "PIZZA SNAKE");
+    writeText(11, 8, "PIZZA WORM");
     writeText(8, 12, "PRESS START");
     writeText(3, 14, "PRESS SELECT FOR SCORES");
     if (hsScore[0])

@@ -7,12 +7,12 @@ addresses from $7E:8000 upward.  wla-link does NOT complain when a large .bss ru
 library's sections -- the ROM builds fine and then corrupts library state at run time.  That
 leaves about 24 KB of $7E for C globals; anything bigger belongs in bank $7F (see canvas.inc).
 
-Usage: check_ram.py pizzasnake.sym
+Usage: check_ram.py pizzaworm.sym
 """
 import re
 import sys
 
-sym = sys.argv[1] if len(sys.argv) > 1 else "pizzasnake.sym"
+sym = sys.argv[1] if len(sys.argv) > 1 else "pizzaworm.sym"
 starts, ends = [], []
 for line in open(sym):
     m = re.match(r"^([0-9a-fA-F]{8})\s+SECTION(START|END)_(\S+)$", line.strip())

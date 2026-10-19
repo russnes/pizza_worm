@@ -1,4 +1,4 @@
-# Pizza Snake (SNES)
+# Pizza Worm (SNES)
 
 A from-scratch classic snake SNES game,
 written in C for the 65816 using the [pvsneslib](https://github.com/alekmaul/pvsneslib)
@@ -70,7 +70,7 @@ export PATH=$PATH:$PVSNESLIB_HOME/devkitsnes/bin
 make
 ```
 
-This produces `pizzasnake.sfc` — a standard LoROM SNES ROM you can run in
+This produces `pizzaworm.sfc` — a standard LoROM SNES ROM you can run in
 any SNES emulator (snes9x, Mesen-S, bsnes/higan, RetroArch's snes9x/bsnes
 cores) or on real hardware via a flashcart (SD2SNES/FXPak, Super Everdrive,
 etc).
@@ -95,7 +95,7 @@ regeneration from the Python scripts). The build ends by running
 Scores are stored in the cartridge's battery-backed SRAM (declared in
 `hdr.asm`: `CARTRIDGETYPE $02`, `SRAMSIZE $01` = 2 KB; about 210 bytes are
 used). Emulators keep this in a `.srm` file next to the ROM (e.g.
-`pizzasnake.srm`); flashcarts such as the FXPak/SD2SNES read the SRAM size from
+`pizzaworm.srm`); flashcarts such as the FXPak/SD2SNES read the SRAM size from
 the ROM header and keep it on the SD card.
 
 The save is written whenever a new high score is entered, and read once at

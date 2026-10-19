@@ -14,7 +14,7 @@ include ${PVSNESLIB_HOME}/devkitsnes/snes_rules
 .PHONY: bitmaps all musics checkram
 
 #---------------------------------------------------------------------------------
-export ROMNAME := pizzasnake
+export ROMNAME := pizzaworm
 
 all: bitmaps musics $(ROMNAME).sfc checkram
 
