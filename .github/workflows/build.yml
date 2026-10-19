@@ -45,20 +45,6 @@ jobs:
           export PATH="$PATH:$PVSNESLIB_HOME/devkitsnes/bin"
           make
 
-      - name: Build ROM (fallback – skip 816-opt)
-        if: steps.build.outcome == 'failure'
-        env:
-          PVSNESLIB_HOME: ${{ github.workspace }}/pvsneslib_install/pvsneslib
-        run: |
-          export PATH="$PATH:$PVSNESLIB_HOME/devkitsnes/bin"
-          # Clean previous attempt
-          make clean || true
-          # Patch the rules so .ps is used directly instead of going through 816-opt
-          # (avoids the "Out of 8-bit range" assembler error)
-          sed -i 's|816-opt \$\*.ps >\$\*.asp|cp $*.ps $*.asp|' \
-            "$PVSNESLIB_HOME/devkitsnes/snes_rules"
-          make
-
       - name: Upload ROM artifact
         uses: actions/upload-artifact@v4
         with:
