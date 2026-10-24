@@ -149,24 +149,6 @@ def draw_pepperoni(canvas, allowed, ox, oy, d):
                     canvas[q] = 10
 
 
-def smooth_noise(rng, size, grid):
-    """A smooth random field over a size x size area (value noise): random numbers on a
-    coarse lattice, blended smoothly in between.  `grid` is the lattice spacing in pixels,
-    so it sets how big the blotches are."""
-    n = size // grid + 3
-    lat = [[rng.random() for _ in range(n)] for _ in range(n)]
-
-    def at(x, y):
-        gx, gy = x / grid, y / grid
-        ix, iy = int(gx), int(gy)
-        fx, fy = gx - ix, gy - iy
-        fx, fy = fx * fx * (3 - 2 * fx), fy * fy * (3 - 2 * fy)
-        a = lat[iy][ix] * (1 - fx) + lat[iy][ix + 1] * fx
-        b = lat[iy + 1][ix] * (1 - fx) + lat[iy + 1][ix + 1] * fx
-        return a * (1 - fy) + b * fy
-    return at
-
-
 def render_pizza(diam, bands, sauce_bands, pepperoni, spots, seed, wobble=0.0, patches=(0.0, 3)):
     """Render a pizza into {(x, y): colour index} on a diam x diam grid.
 
@@ -178,8 +160,10 @@ def render_pizza(diam, bands, sauce_bands, pepperoni, spots, seed, wobble=0.0, p
     spots        number of browned-cheese spots (and as many pale highlights)
     wobble       chance that each pixel of cheese touching the sauce ring turns to sauce
                  too, so the cheese edge is ragged instead of a perfect circle
-    patches      (cover, grid): the fraction of the open cheese area where the sauce shows
-                 through, and the size (px) of the blotches it forms
+    patches      (cover, size): sauce showing through the cheese. `cover` is the fraction of
+                 the open cheese area it takes up; it is spread out evenly as many small,
+                 separate patches (short strokes of at most `size` pixels, never touching
+                 each other), so it can't pool into one big slab
     """
     pix = disc(diam)
     dep = depth_map(pix)
@@ -220,19 +204,59 @@ def render_pizza(diam, bands, sauce_bands, pepperoni, spots, seed, wobble=0.0, p
                 canvas[p] = 6
                 cheese.discard(p)
 
-    # Sauce showing through the cheese: the lowest-valued part of a smooth random field,
-    # so it forms irregular patches and veins rather than scattered dots.
-    cover, grid = patches
+    # Sauce showing through the cheese, spread evenly: each new patch starts at the open spot
+    # farthest from the existing ones (best-candidate sampling), then grows into a short
+    # stroke of 1..size pixels that never touches another patch or the sauce ring.
+    cover, size = patches
     if cover:
-        field = smooth_noise(rng, diam, grid)
-        cand = [p for p in sorted(cheese) if p not in near_pep]
-        cand.sort(key=lambda p: field(p[0] + 0.5, p[1] + 0.5))
-        for p in cand[:int(round(cover * len(cand)))]:
-            canvas[p] = 6
-            cheese.discard(p)
-        # the lower-right edge of each patch is a little darker, like the sauce ring
-        for p in [q for q in sorted(inside) if canvas[q] == 6]:
-            if ring[p] > first_cheese - 1 and (p[0] + 1, p[1]) in cheese and (p[0], p[1] + 1) in cheese:
+        # keep the sauce off the four edges of every slice (so each slice stays crisp against
+        # cheese); it may still touch one at a corner
+        edge_of_pep = set(pep_px)
+        for (qx, qy) in pep_px:
+            for ddx, ddy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                edge_of_pep.add((qx + ddx, qy + ddy))
+        base = [p for p in sorted(cheese) if p not in edge_of_pep]
+        target = int(round(cover * len(base)))
+        owner = {p: -1 for p in pix if canvas[p] in (6, 15) and p not in cheese}   # ring + ragged edge
+        allowed = set(base)
+        dirs = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+        around = [(a, b) for a in (-1, 0, 1) for b in (-1, 0, 1)]
+        seeds, sizes, covered = [], [], 0
+        for _ in range(400):
+            if covered >= target:
+                break
+            free = [p for p in base if p not in owner and all((p[0] + a, p[1] + b) not in owner for a, b in around)]
+            if not free:
+                break
+            pick = rng.sample(free, min(12, len(free)))
+            p = max(pick, key=lambda q: min([(q[0] - t[0]) ** 2 + (q[1] - t[1]) ** 2 for t in seeds] or [0]))
+            pid = len(seeds)
+            seeds.append(p)
+            want = rng.randint(max(1, size // 2), size)
+            cells, heading = [p], rng.choice(dirs)
+            owner[p] = pid
+            while len(cells) < want:
+                opts = []
+                for c in cells:
+                    for d in dirs:
+                        q = (c[0] + d[0], c[1] + d[1])
+                        if q in allowed and q not in owner and all(owner.get((q[0] + a, q[1] + b), pid) == pid for a, b in around):
+                            opts.append((q, d))
+                if not opts:
+                    break
+                straight = [o for o in opts if o[1] == heading]
+                q, heading = rng.choice(straight) if straight and rng.random() < 0.65 else rng.choice(opts)
+                cells.append(q)
+                owner[q] = pid
+            sizes.append(len(cells))
+            covered += len(cells)
+        for p, pid in owner.items():
+            if pid >= 0:
+                canvas[p] = 6
+                cheese.discard(p)
+        # the lower-right end of each stroke is a little darker, like the sauce ring
+        for p, pid in owner.items():
+            if pid >= 0 and sizes[pid] >= 2 and (p[0] + 1, p[1]) not in owner and (p[0], p[1] + 1) not in owner:
                 canvas[p] = 15
 
     # Browned cheese blotches and pale shine, placed pseudo-randomly but reproducibly.
@@ -257,33 +281,33 @@ RECIPES = {
         bands=[(12, 4)],
         sauce_bands=0,
         pepperoni=[(2, 2, 2), (5, 3, 2)],
-        spots=0, patches=(0.12, 3), seed=1),
+        spots=0, patches=(0.12, 2), seed=1),
     "pizza_medium": dict(
         diam=12,
         bands=[(12, 4)],
         sauce_bands=1,
         pepperoni=[(5, 2, 3), (7, 7, 2), (2, 6, 2)],
-        spots=2, patches=(0.10, 3), seed=2),
+        spots=2, patches=(0.18, 3), seed=30),
     "pizza_big": dict(
         diam=16,
         bands=[(12, 4)],
-        sauce_bands=1, wobble=0.35,
+        sauce_bands=1, wobble=0.15,
         pepperoni=[(2, 8, 3), (6, 11, 3), (6, 6, 3), (11, 6, 3), (8, 2, 3)],
-        spots=3, patches=(0.18, 3), seed=3),
+        spots=3, patches=(0.22, 3), seed=12),
     "pizza_large": dict(
         diam=24,
         bands=[(4, 5), (12, 4)],
         sauce_bands=1, wobble=0.35,
         pepperoni=[(15, 5, 4), (11, 11, 4), (3, 9, 4), (10, 16, 4), (8, 4, 4), (7, 13, 3),
                    (18, 12, 3)],
-        spots=6, patches=(0.25, 4), seed=4),
+        spots=6, patches=(0.25, 4), seed=5),
     "pizza_giant": dict(
         diam=32,
         bands=[(4, 5), (12, 4)],
         sauce_bands=1, wobble=0.4,
         pepperoni=[(6, 10, 5), (9, 21, 5), (14, 14, 5), (15, 4, 5), (22, 16, 4), (6, 17, 4),
                    (21, 22, 4), (15, 22, 4), (23, 8, 3), (9, 4, 3)],
-        spots=10, patches=(0.28, 4), seed=5),
+        spots=10, patches=(0.28, 5), seed=5),
 }
 
 

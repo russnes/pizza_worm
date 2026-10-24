@@ -136,8 +136,8 @@ grows at the same pace as before:
 | giant | 32 px | 2×2 of 16×16   | 41–59  | 6%   |
 
 The art is drawn by `gen_sprites.py` with a small renderer (a thin brown crust,
-a ring of tomato sauce with a ragged inner edge and patches showing through the
-yellow cheese, shaded pepperoni slices) so all five share one look;
+a ring of tomato sauce and small separate patches of it spread evenly through
+the yellow cheese (never one big slab), shaded pepperoni slices) so all five share one look;
 `python3 gen_sprites.py --preview` writes `pizza_preview.png` to see them. To
 change a pizza, edit its entry in `RECIPES` there (diameter, crust rings, how
 much sauce shows through the cheese via `patches`, where the pepperoni go). To change how often/valuable/how easy to eat each size is,
