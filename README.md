@@ -7,11 +7,12 @@ homebrew devkit.
 ## Features
 
 - Continuous, angle-based movement (turn left/right, not grid-based Snake)
-- Very long snakes (up to 504 segments): the most recent 30 segments are
+- Very long snakes (up to 504 segments): the most recent 29 segments are
   smooth-moving sprites, and everything older is drawn pixel-for-pixel into the
   background layer as the snake grows past the SNES's sprite limits — see
   "How the long tail works" below
-- Pizzas of two sizes/point values, randomly spawned
+- Pepperoni pizzas in five sizes (8, 12, 16, 24 and 32 px) worth more points the
+  bigger they are, randomly spawned — see "The pizzas" below
 - 20-entry high score table with on-screen name entry (8 characters: A–Z, 0–9
   and space), **saved to battery-backed SRAM so it survives power-off**
 - After every game you land on the high score table (your new entry blinks);
@@ -30,7 +31,7 @@ homebrew devkit.
 | `body_dot.inc`          | Generated: the body-dot footprint used by `canvas.inc`             |
 | `check_ram.py`          | Post-link check that fails the build if WRAM sections overlap       |
 | `Makefile`              | Build script                                                      |
-| `gen_sprites.py`        | Generates `sprites.bmp` (snake head/body/pizza sprite sheet) and `body_dot.inc`; the single definition of the body shape |
+| `gen_sprites.py`        | Generates `sprites.bmp` (snake head/body sprite sheet and all five pepperoni pizzas), `sprite_tiles.h` and `body_dot.inc`; the single definition of the body shape. `--preview` also writes `pizza_preview.png` |
 | `gen_tiles.py`          | Generates `tiles1.bmp` (font and wall tiles) and reserves the tail canvas' tile range |
 | `gen_trig.py`           | Generates `trig_table.h` (sin/cos lookup table for movement)       |
 
@@ -117,11 +118,54 @@ power-off.
 
 To **reset the table**, delete the `.srm` file.
 
+## The pizzas
+
+Every pizza is a pepperoni pizza, in one of five sizes. Bigger ones are worth
+more points (a point is a third of a segment of growth) and turn up less often.
+The points are tuned so the average pizza is worth about 17.9 points, 5.6
+segments of growth, which is what the original two-size game averaged when
+actually played (see the note on the random generator below), so the snake
+grows at the same pace as before:
+
+| Size  | Pizza | Sprites        | Points | Odds |
+|-------|-------|----------------|--------|------|
+| small | 8 px  | 1 × 8×8        | 6–11   | 38%  |
+| medium| 12 px | 1 × 16×16      | 12–16  | 26%  |
+| big   | 16 px | 1 × 16×16      | 17–28  | 20%  |
+| large | 24 px | 2×2 of 16×16   | 29–40  | 10%  |
+| giant | 32 px | 2×2 of 16×16   | 41–59  | 6%   |
+
+The art is drawn by `gen_sprites.py` with a small renderer (a thin brown crust,
+a ring of tomato sauce with a ragged inner edge and patches showing through the
+yellow cheese, shaded pepperoni slices) so all five share one look;
+`python3 gen_sprites.py --preview` writes `pizza_preview.png` to see them. To
+change a pizza, edit its entry in `RECIPES` there (diameter, crust rings, how
+much sauce shows through the cheese via `patches`, where the pepperoni go). To change how often/valuable/how easy to eat each size is,
+edit the `pizza*` tables above `spawnPizza()` in `psnake.c` -- one row per size.
+
+The OBJ size mode only has 8×8 and 16×16 sprites, so the 24 px and 32 px pizzas
+are four 16×16 sprites in a 2×2 block (top-left, top-right, bottom-left,
+bottom-right = tile + 0, 2, 32, 34 on the 16-tile-wide sheet), and the pizza gets
+four OAM entries up front (`PIZZA_SLOTS`; the head is entry 4, body sprites start
+at entry 5). Smaller pizzas use the first entry and hide the rest. A pizza is
+eaten when the head's centre is within its radius plus `HEAD_R` on both axes.
+
+A note on the random numbers: `nextRand()` is a 16-bit LCG, seeded with a
+constant at boot and called exactly 4 times per spawn. The *low* bits of an LCG
+repeat with a tiny period, so with 4 calls per spawn `nextRand() % 4` returns
+the same value every time. The original game's `% 10` / `% 20` calls were hit
+by this: its "30% big" pizzas were really 40%, and a small pizza could only be
+worth 6, 8, 10, 12 or 14. The pizza tier and value now use the high byte
+(`nextRand() >> 8`), which is well mixed; the point ranges above were
+calibrated against the original's measured average (17.9 points, 5.6 segments
+per pizza). Pizza *positions* still use `% range` on the low bits, so they fall
+on a 4 px grid (53 x 41 spots), exactly as they did before.
+
 ## How the long tail works
 
 The SNES can only display 128 hardware sprites at once -- and, more
 restrictively, only **32 on any one scanline** -- so a snake that's allowed to
-grow can't be *all* sprites. The most recent 30 segments (nearest the head) are
+grow can't be *all* sprites. The most recent 29 segments (nearest the head) are
 rendered as sprites and move smoothly every frame (`SPRITE_WINDOW`). Once a
 segment ages further back than that, it is drawn into the background layer
 instead, and since the snake's length only changes when it eats (not with
@@ -188,7 +232,11 @@ reintroduce by accident:
   flickers. Real hardware and accurate emulators (bsnes) do this; a lenient
   emulator may not, which can hide the problem. So `SPRITE_WINDOW + head +
   pizza <= 32` is checked at compile time: it can't be exceeded whatever shape
-  the snake makes. Collisions deliberately use a *separate* window
+  the snake makes. There is a second limit too, **34 eight-pixel-wide slivers
+  of sprite per scanline** (an 8×8 sprite is 1, a 16×16 is 2), and that is
+  what sets the window: a scanline through a 32×32 pizza crosses two 16×16
+  sprites (4 slivers), so 1 + 4 + `SPRITE_WINDOW` must be <= 34, which is why
+  the window is 29 and not 30. That is checked at compile time as well. Collisions deliberately use a *separate* window
   (`COLLIDE_WINDOW`), so dying doesn't depend on how many sprites we can draw.
   Baking starts `SPRITE_OVERLAP` segments before the sprites run out, because
   sprites sit behind BG tiles and the baked dots simply cover the sprites

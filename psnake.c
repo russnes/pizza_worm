@@ -59,9 +59,9 @@ static void waitVBlank(void)
 #define ARENA_TOP    (PLAY_TOP + HEAD_R)
 #define ARENA_BOTTOM (PLAY_BOTTOM - HEAD_R)
 
-/* Pizzas spawn in the region they always have (kept clear of the walls for the
-   16x16 big pizza); deliberately NOT tied to the death bounds above, so fixing
-   the walls doesn't move pizzas or change the random sequence. */
+/* Pizzas spawn inside this region (their whole sprite box is kept clear of the walls,
+   see spawnPizza()); deliberately NOT tied to the death bounds above, so fixing the
+   walls doesn't move pizzas. */
 #define SPAWN_LEFT   14
 #define SPAWN_RIGHT  242
 #define SPAWN_TOP    30
@@ -78,11 +78,20 @@ static void waitVBlank(void)
    segments) -- a hole in the snake that appears, vanishes and flickers as the
    shape changes, on real hardware and accurate emulators (a lenient emulator
    may hide it). So the sprite budget must be a hard guarantee, not a hope:
-   head + pizza + SPRITE_WINDOW body sprites <= 32, whatever the snake's shape. */
-#define SPRITE_WINDOW 30   /* most recent segments rendered as smooth sprites; everything
+   head + pizza + SPRITE_WINDOW body sprites <= 32, whatever the snake's shape.
+   (There is a second per-scanline limit, 34 eight-pixel-wide "slivers" of sprite: an 8x8
+   sprite costs one, a 16x16 sprite two.)
+   The biggest pizzas are 32x32, drawn as 2x2 sprites of 16x16, so a scanline through one
+   crosses 2 sprites = 4 slivers. */
+#define PIZZA_LINE_SPRITES 2
+#define PIZZA_LINE_SLIVERS 4
+#define SPRITE_WINDOW 29   /* most recent segments rendered as smooth sprites; everything
                                older is baked onto the BG layer (see stepSnake()) */
-#if SPRITE_WINDOW + 2 > 32
+#if SPRITE_WINDOW + 1 + PIZZA_LINE_SPRITES > 32
 #error SPRITE_WINDOW + head + pizza must be <= 32 (hardware limit: sprites per scanline)
+#endif
+#if SPRITE_WINDOW + 1 + PIZZA_LINE_SLIVERS > 34
+#error SPRITE_WINDOW + head + pizza must fit in 34 slivers (hardware limit: sprite tiles per scanline)
 #endif
 /* What decides whether the snake *dies* is deliberately independent of how many
    sprites we can afford to draw: self-collision by sample position covers this
@@ -115,10 +124,15 @@ static void waitVBlank(void)
 #define MOVESPEED    210   /* desired sub-pixel speed per frame, Q7 (128=1px), ~1.6px/frame */
 #define SELF_SKIP    8
 #define SELF_R       3     /* pixel radius, cheap abs-based check (thin body) */
-#define PIZZA_R      6
-#define OAM_PIZZA    0
-#define OAM_HEAD     4
-#define OAM_BODY0    8
+/* OAM layout. OAM ids are byte offsets (entry number * 4).  The pizza gets PIZZA_SLOTS
+   entries up front -- a 32x32 pizza is four 16x16 sprites; smaller ones use the first
+   entry and hide the rest -- then the head, then the body segments. */
+#define PIZZA_TIERS     5                    /* pizza sizes, see spawnPizza() */
+#define PIZZA_SLOTS     4
+#define OAM_PIZZA       0
+#define OAM_HEAD        (PIZZA_SLOTS * 4)
+#define OAM_BODY0       ((PIZZA_SLOTS + 1) * 4)
+#define OAM_FIRST_BODY  (PIZZA_SLOTS + 1)    /* entry number of the first body sprite */
 
 #define ST_TITLE     0
 #define ST_PLAYING   1
@@ -167,7 +181,7 @@ u16 curLen;
 u16 score;
 u16 pizzaX, pizzaY;
 u16 pizzaValue;
-u8 pizzaBig;
+u8 pizzaEat;               /* how close (in px, per axis) the head must get to eat it */
 u8 gameState;
 u16 randSeed;
 u16 pad0;
@@ -302,27 +316,78 @@ void hideAllSprites(void)
 }
 
 //---------------------------------------------------------------------------------
+/* The pizzas. Five sizes, all pepperoni, listed smallest to biggest (the art for each is
+   drawn by gen_sprites.py). A 16px pizza sits in a 16x16 sprite, a 24px one centred in a
+   32x32 box made of four 16x16 sprites, and so on:
+
+       tier   pizza    sprites     eat if head within    points
+         0     8 px    1  (8x8)          6 px              6-11
+         1    12 px    1  (16x16)        8 px             12-16
+         2    16 px    1  (16x16)       10 px             17-28
+         3    24 px    4  (16x16)       14 px             29-40
+         4    32 px    4  (16x16)       18 px             41-59
+
+   The eat distance is the pizza's radius plus HEAD_R, tested per axis like it always was.
+   Each point is worth a third of a segment of growth. The points are tuned so that, with
+   the odds below, the average pizza is worth 17.9 points = 5.6 segments of growth, which is
+   what the game's original two sizes averaged when played (measured over its pizza sequence),
+   so the snake grows at the same pace however big the pizza menu gets. */
+static const u8 pizzaTile[PIZZA_TIERS]    = { SPR_PIZZA_SMALL, SPR_PIZZA_MEDIUM, SPR_PIZZA_BIG,
+                                              SPR_PIZZA_LARGE, SPR_PIZZA_GIANT };
+static const u8 pizzaBox[PIZZA_TIERS]     = { 8, 16, 16, 32, 32 };   /* sprite box size, px */
+static const u8 pizzaParts[PIZZA_TIERS]   = { 1, 1, 1, 4, 4 };       /* OAM entries used */
+static const u8 pizzaEatR[PIZZA_TIERS]    = { 4 + HEAD_R, 6 + HEAD_R, 8 + HEAD_R,
+                                              12 + HEAD_R, 16 + HEAD_R };
+static const u8 pizzaValBase[PIZZA_TIERS] = { 6, 12, 17, 29, 41 };
+static const u8 pizzaValSpan[PIZZA_TIERS] = { 6, 5, 12, 12, 19 };    /* value = base + 0..span-1 */
+/* How often each size turns up: cumulative odds out of 256, for tiers 0..3 (tier 4 gets
+   what's left). 97/256 = 38% small, 26% medium, 20% big, 10% large, 6% giant. */
+static const u8 pizzaOdds[PIZZA_TIERS - 1] = { 97, 163, 214, 240 };
+
 void spawnPizza(void)
 {
-    u16 r;
-    pizzaX = SPAWN_LEFT + 8 + (nextRand() % (SPAWN_RIGHT - SPAWN_LEFT - 16));
-    pizzaY = SPAWN_TOP + 8 + (nextRand() % (SPAWN_BOTTOM - SPAWN_TOP - 16));
+    u8 tier, i, large;
+    u16 r, box, edge, left, top, tile;
 
-    r = nextRand() % 10;
-    if (r < 3)
+    /* pick a size, then a spot that keeps the pizza's whole sprite box inside the spawn
+       region (the 8x8 pizza keeps the same clearance as the 16x16 ones, as it always has) */
+    r = nextRand() >> 8;
+    for (tier = 0; tier < PIZZA_TIERS - 1; tier++)
+        if (r < pizzaOdds[tier])
+            break;
+
+    box = pizzaBox[tier];
+    edge = box >> 1;
+    if (edge < 8)
+        edge = 8;
+    pizzaX = SPAWN_LEFT + edge + (nextRand() % (SPAWN_RIGHT - SPAWN_LEFT - 2 * edge));
+    pizzaY = SPAWN_TOP + edge + (nextRand() % (SPAWN_BOTTOM - SPAWN_TOP - 2 * edge));
+    /* (the value uses the generator's HIGH byte: the low bits of this kind of LCG repeat
+       with a tiny period, and with exactly 4 calls per spawn "% span" would hand out the
+       same value every time) */
+    pizzaValue = pizzaValBase[tier] + ((nextRand() >> 8) % pizzaValSpan[tier]);
+    pizzaEat = pizzaEatR[tier];
+
+    /* put the sprites on screen. Everything but the 8x8 pizza uses 16x16 sprites; the
+       32x32 ones are a 2x2 block of them: the right-hand pair is 16px over and 2 tiles
+       on, the bottom pair 16px down and 32 tiles on (the sheet is 16 tiles wide). */
+    large = (box > 8) ? OBJ_LARGE : OBJ_SMALL;
+    left = pizzaX - (box >> 1);
+    top = pizzaY - (box >> 1);
+    tile = pizzaTile[tier];
+    for (i = 0; i < PIZZA_SLOTS; i++)
     {
-        /* big pizza: rarer, worth more, grows more */
-        pizzaBig = 1;
-        pizzaValue = 20 + (nextRand() % 20); /* 20-39 */
-        oamSetEx(OAM_PIZZA, OBJ_LARGE, OBJ_SHOW);
-        oamSet(OAM_PIZZA, pizzaX - 8, pizzaY - 8, 2, 0, 0, SPR_PIZZA_BIG, 0);
-    }
-    else
-    {
-        pizzaBig = 0;
-        pizzaValue = 5 + (nextRand() % 10); /* 5-14 */
-        oamSetEx(OAM_PIZZA, OBJ_SMALL, OBJ_SHOW);
-        oamSet(OAM_PIZZA, pizzaX - 4, pizzaY - 4, 2, 0, 0, SPR_PIZZA_SMALL, 0);
+        u16 id = OAM_PIZZA + i * 4;
+        if (i < pizzaParts[tier])
+        {
+            u16 col = i & 1;
+            u16 row = i >> 1;
+            oamSetEx(id, large, OBJ_SHOW);
+            oamSet(id, left + (col << 4), top + (row << 4), 2, 0, 0,
+                   tile + (col << 1) + (row << 5), 0);
+        }
+        else
+            oamSetVisible(id, OBJ_HIDE);
     }
 }
 
@@ -474,7 +539,7 @@ void resetGame(void)
     drawWalls();
     resetCanvas();
     hideAllSprites();
-    oamHighWater = 2; /* oam #0 (pizza) and #1 (head) are managed separately below */
+    oamHighWater = OAM_FIRST_BODY; /* the pizza's entries and the head are managed separately below */
     oamSetEx(OAM_HEAD, OBJ_SMALL, OBJ_SHOW);
     oamSet(OAM_HEAD, (u16)(posX >> 7) - 4, (u16)(posY >> 7) - 4, 3, 0, 0, SPR_HEAD, 0);
     spawnPizza();
@@ -532,7 +597,7 @@ void drawSprites(void)
        a single fixed shape, so there's nothing to update per frame beyond
        position, and no risk of the flicker a per-frame-changing shape
        would cause) */
-    activeCount = 2 + bodyCount;
+    activeCount = OAM_FIRST_BODY + bodyCount;
     if (activeCount > oamHighWater)
     {
         for (i = oamHighWater; i < activeCount; i++)
@@ -694,7 +759,7 @@ u8 stepSnake(void)
     {
         s16 adx = (s16)hx - (s16)pizzaX;
         s16 ady = (s16)hy - (s16)pizzaY;
-        u8 r = pizzaBig ? (PIZZA_R + 4) : PIZZA_R;
+        u8 r = pizzaEat;
         if (adx < 0) adx = -adx;
         if (ady < 0) ady = -ady;
         if (adx < r && ady < r)
