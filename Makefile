@@ -33,6 +33,15 @@ tiles1.bmp tiles_charmap.h: gen_tiles.py
 	@echo generating tileset ...
 	python3 gen_tiles.py
 
+# the unlit version of the neon sign on the title art (see gen_sign_off.py)
+sign_off.bmp sign_off.h: gen_sign_off.py splash.bmp
+	@echo generating unlit neon sign ...
+	python3 gen_sign_off.py
+
+sign_off.pic: sign_off.bmp
+	@echo convert bitmap ... $(notdir $@)
+	$(GFXCONV) -s 8 -o 16 -u 16 -t bmp -i $<
+
 trig_table.h: gen_trig.py
 	@echo generating trig table ...
 	python3 gen_trig.py
@@ -49,9 +58,9 @@ splash.pic splash.map splash.pal: splash.bmp
 	@echo convert splash bitmap ... $(notdir $@)
 	$(GFXCONV) -s 8 -o 16 -u 16 -p -m -R -t bmp -i $<
 
-bitmaps : sprites.pic tiles1.pic splash.pic trig_table.h sprite_tiles.h body_dot.inc tiles_charmap.h
+bitmaps : sprites.pic tiles1.pic splash.pic sign_off.pic trig_table.h sprite_tiles.h sign_off.h body_dot.inc tiles_charmap.h
 
-# data.asm pulls these in with .include, so rebuild it when they change
-data.obj: body_dot.inc canvas.inc
+# data.asm pulls these in with .include / .incbin, so rebuild it when they change
+data.obj: body_dot.inc canvas.inc sprites.pic tiles1.pic splash.pic sign_off.pic
 
 musics: $(SOUNDBANK).asm

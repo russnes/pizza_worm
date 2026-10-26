@@ -19,6 +19,7 @@ homebrew devkit.
   it can also be opened from the title screen
 - Title screen, game-over screen, name-entry screen, high-score screen
 - Continuous background music (starts on boot, loops forever)
+- Splash screen with the neon pizza sign flashing on and off every 2 seconds while it waits for Start — see "The flashing neon sign" below
 
 ## Directory contents
 
@@ -34,9 +35,10 @@ homebrew devkit.
 | `gen_sprites.py`        | Generates `sprites.bmp` (snake head/body sprite sheet and all five pepperoni pizzas), `sprite_tiles.h` and `body_dot.inc`; the single definition of the body shape. `--preview` also writes `pizza_preview.png` |
 | `gen_tiles.py`          | Generates `tiles1.bmp` (font and wall tiles) and reserves the tail canvas' tile range |
 | `gen_trig.py`           | Generates `trig_table.h` (sin/cos lookup table for movement)       |
+| `gen_sign_off.py`       | Generates `sign_off.bmp` (the neon sign on the splash art, switched off) and `sign_off.h` from `splash.bmp`. `--preview` also writes `sign_preview.png` |
 
 Running `make` regenerates `sprites.bmp`, `tiles1.bmp`, `trig_table.h`,
-`sprite_tiles.h`, `body_dot.inc` and `tiles_charmap.h` automatically via the three Python
+`sprite_tiles.h`, `body_dot.inc`, `tiles_charmap.h`, `sign_off.bmp` and `sign_off.h` automatically via the four Python
 scripts above, then converts the bitmaps to SNES tile data and compiles the
 ROM — you don't need to run the Python scripts yourself unless you want to
 edit the generated art/tables directly.
@@ -266,6 +268,29 @@ case (typically ~243); `flushUploads()` checks the vblank flag before each tile,
 so a burst can never write outside vblank -- the leftovers just go out next
 frame. If you add per-frame work, `lag_frame_counter` (pvsneslib) counts frames
 that overran.
+
+## The flashing neon sign
+
+The pizza-slice neon sign in the top-right corner of the title art (`splash.bmp`) switches
+between lit and unlit every 2 seconds (`SIGN_FLASH_SECS` in `psnake.c`; the frame count is
+chosen from the console's 60 Hz/50 Hz flag, so it is 2 real seconds on PAL too) for as
+long as the splash screen waits for Start.
+
+- `gen_sign_off.py` paints the *unlit* sign from `splash.bmp`: the tubing becomes dull
+  glass, the glow is taken off the brick wall (glow-tinted pixels are replaced with brick
+  from the same row next to the sign, and the faint outer edge of the glow -- a scatter of
+  brighter bricks the plain wall doesn't have -- is toned back to the plain wall shades)
+  and the awning stripes the glow also lit are rebuilt from the neighbouring stripe of the
+  same kind, moved to follow the awning's slope so their top edge and highlight stay put.
+  It only uses colours already in the splash palette, so no palette changes are needed. The result is the
+  64-tile block `sign_off.pic` (8 x 8 tiles, location and size in `sign_off.h`; the size must be even because the converter pads bitmaps to a multiple of 16 px).
+- The splash is a 1:1 tilemap (`-R`, no tile reduction: map cell N shows tile N). The unlit
+  tiles are uploaded to VRAM once, right behind the splash tiles, while the screen is still
+  blanked. Switching the sign is then just rewriting the 64 tilemap cells over it to point
+  at the lit tiles or the unlit ones (`setSignLit()`): one small DMA per tilemap row, from
+  two word tables built at start-up, so it finishes well inside one VBlank.
+- If you redraw the sign in `splash.bmp`, run `python3 gen_sign_off.py --preview` and check
+  `sign_preview.png`; the constants at the top of the script say where the sign is.
 
 ## Music
 

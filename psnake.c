@@ -7,6 +7,7 @@
 #include "trig_table.h"
 #include "tiles_charmap.h"
 #include "sprite_tiles.h"
+#include "sign_off.h"
 #include "res/soundbank.h"
 
 extern char SOUNDBANK__;
@@ -18,6 +19,7 @@ extern char palwalls, palwalls_end;
 extern char gfxsplash, gfxsplash_end;
 extern char palsplash, palsplash_end;
 extern char mapsplash, mapsplash_end;
+extern char gfxsignoff, gfxsignoff_end;
 
 /* Helper that keeps the SPC700 music engine fed and then waits for VBlank.
    Must be called every frame or the music will stutter / stop. */
@@ -1198,8 +1200,54 @@ void gameOverScreen(void)
 }
 
 //---------------------------------------------------------------------------------
+/* Flashing neon sign on the splash screen.
+
+   The title art has a lit neon pizza sign in its top-right corner.  sign_off.pic holds the
+   same block of tiles (SIGN_TW x SIGN_TH, see sign_off.h) with the sign switched off.  It is
+   uploaded once, straight after the splash tiles, and the sign is switched by pointing the
+   tilemap cells over it at either the lit tiles or the unlit ones.  splash.map is one tile
+   per cell (cell N shows tile N), so the two sets of tilemap words are simply worked out
+   once, up front, and a flash is then SIGN_TH tiny DMA transfers (one per tilemap row).
+   (Writing the words one by one from C was too slow: part of them landed after VBlank
+   had ended and were lost, leaving a half-switched sign.) */
+#define SPLASH_TILES     (32 * 28)                      /* tiles in splash.pic */
+#define SIGN_OFF_VRAM    (0x1000 + SPLASH_TILES * 16)   /* VRAM word address just past them */
+#define SIGN_FLASH_SECS  2                              /* the sign changes state this often */
+
+static u16 signMap[2][SIGN_TW * SIGN_TH];   /* [0] = unlit, [1] = lit; tilemap words, row by row */
+
+static void initSignMaps(void)
+{
+    u16 row, col, i = 0;
+
+    for (row = 0; row < SIGN_TH; row++)
+        for (col = 0; col < SIGN_TW; col++, i++)
+        {
+            signMap[0][i] = SPLASH_TILES + i;                                /* tile i of sign_off.pic */
+            signMap[1][i] = (SIGN_ROW + row) * 32 + SIGN_COL + col;           /* the original splash tile */
+        }
+}
+
+/* Point the sign's tilemap cells at the lit or the unlit tiles.  Call it right after
+   waitVBlank(): it copies to VRAM. */
+static void setSignLit(u8 lit)
+{
+    u16 *src = signMap[lit];
+    u16 cell = SIGN_ROW * 32 + SIGN_COL;    /* the splash tilemap is at VRAM word 0, 32 cells per row */
+    u8 row;
+
+    for (row = 0; row < SIGN_TH; row++)
+    {
+        dmaCopyVram((u8 *)src, cell, SIGN_TW * 2);
+        src += SIGN_TW;
+        cell += 32;
+    }
+}
+
+//---------------------------------------------------------------------------------
 /* Full-screen splash using the Pizza Worm title art.
-   Fades in, waits for Start, then fades out before the normal title. */
+   Fades in, waits for Start (the neon sign flashes meanwhile), then fades out before the
+   normal title. */
 void splashScreen(void)
 {
     /* Force the screen completely off / black while we load everything.
@@ -1208,6 +1256,8 @@ void splashScreen(void)
     setBrightness(0);
 
     dmaCopyVram(&gfxsplash, 0x1000, (&gfxsplash_end - &gfxsplash));
+    dmaCopyVram(&gfxsignoff, SIGN_OFF_VRAM, (&gfxsignoff_end - &gfxsignoff));
+    initSignMaps();
     dmaCopyVram(&mapsplash, 0x0000, (&mapsplash_end - &mapsplash));
     dmaCopyCGram((u8 *)&palsplash, 0, (&palsplash_end - &palsplash));
 
@@ -1234,12 +1284,26 @@ void splashScreen(void)
     setFadeEffectEx(FADE_IN, 12);
 
     waitReleased(KEY_START);
-    for (;;)
     {
-        pad0 = padsCurrent(0);
-        waitVBlank();
-        if (pad0 & KEY_START)
-            break;
+        /* the sign flashes lit <-> unlit every SIGN_FLASH_SECS seconds (PAL runs at 50Hz) */
+        u8 flashFrames = ((REG_STAT78 & 0x10) ? 50 : 60) * SIGN_FLASH_SECS;
+        u8 flashTimer = 0;
+        u8 signLit = 1;
+
+        for (;;)
+        {
+            pad0 = padsCurrent(0);
+            waitVBlank();
+            if (pad0 & KEY_START)
+                break;
+
+            if (++flashTimer >= flashFrames)
+            {
+                flashTimer = 0;
+                signLit ^= 1;
+                setSignLit(signLit);
+            }
+        }
     }
 
     /* Fade back to black, then the caller reloads the game graphics */

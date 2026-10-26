@@ -8,6 +8,8 @@ gfxwalls: .incbin "tiles1.pic"
 gfxwalls_end:
 palwalls: .incbin "tiles1.pal"
 palwalls_end:
+gfxsignoff: .incbin "sign_off.pic"
+gfxsignoff_end:
 .ends
 
 .section ".rodata2" superfree
