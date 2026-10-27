@@ -14,10 +14,12 @@ This script reads splash.bmp and writes
 
 How the "off" picture is made (only palette entries that already exist are used):
   * the neon tubing (slice outline, curly wire, pepperoni rings) becomes dull, dark glass
-  * the glow is taken off the wall: glow-tinted pixels and everything inside the slice are
-    replaced with brick texture from the same row of plain wall next to the sign, and the
-    faint outer edge of the glow (a scatter of brighter bricks the plain wall doesn't have)
-    is toned back to the plain wall shades; every other wall pixel keeps its drawn colour
+  * the glow is taken off the wall without losing the brick texture: bricks the glow
+    flattened (next to the sign and inside the slice) are filled with plain brick, copied
+    along the climb of the brick rows so mortar lines carry on at the right height, and the
+    glow-brightened bricks farther out are darkened back by ranking each one against its
+    neighbours and handing out the plain wall's own face/mortar mix (so the layout is kept,
+    just darker); every other wall pixel keeps its drawn colour
   * the awning under the slice's tip is rebuilt from the neighbouring stripe of the same
     kind, moved to follow the awning's slope (it rises to the right), so the stripes keep
     their colours, shading, top edge and yellow highlight
@@ -70,11 +72,18 @@ STRAY_COLOR = 3                  # lone green pixels in the awning art: never co
 ORANGE_X1 = 211                  # the orange stripe beside the tip spans x < this; its edges can be
                                  # measured.  Right of it the dark-red stripe under the tip has
                                  # no readable edge (tube and glow cover it): the defaults apply
-PLAIN_8 = (9, 9, 9, 9, 9, 9, 9, 9, 9, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10)  # wall mix: ~55% / ~45%
+BRICK_SHADES = (8, 9, 10)        # the wall's brick shades: 8 = glow-lit, 9 = brick face, 10 = mortar
+PLAIN_WALL = (178, 10, 192, 47)  # a stretch of plain, unlit wall (x0, y0, x1, y1): sets the shade mix
+BRICK_SLOPE = 0.105              # the brick rows climb to the right by this many rows per pixel
+                                 # (measured; the awning slopes the same way)
+BRICK_PERIOD = 4                 # rows from one mortar line to the next (about 4.4)
+GLOW_BAND = 4                    # bricks this close to a glow-lit (8) brick count as glow-lit too
+RANK_BOX = (8, 3, 15)            # darkening ranks each brick against the glow-lit bricks within
+                                 # +-8 px sideways and +-3 rows (needs at least 15 of them)
+STRIP = (186, 206)               # plain wall tiled into the glow-flattened bricks beside the sign
+SKY_STRIP = (206, 218)           # ... and for the top rows, where the strip's left is dark sky
 NAVY = (6, 11, 13)               # dark-gap colours, never touched around the wire
-WALL_MIN_RUN = 8                 # shortest strip of clean brick worth tiling
-BRICK_X0 = 182                   # plain brick starts here (left of it is the "PIZZA" lettering)
-SKY_ROWS, SKY_X0 = 10, 206       # the top rows are black/navy left of x=206; bricks start there
+SKY_ROWS = 10                    # the top rows are black/navy left of x=206; bricks start there
 
 # --- the unlit look, as palette entries already in splash.bmp ---------------------------
 OFF_TUBE = {0: 4, 1: 5}          # dull red-orange / dark brown glass
@@ -107,6 +116,7 @@ def component(seed, ok, neighbours, within=inwin):
 def make_off(lit):
     """Return a copy of the lit splash image with the sign switched off."""
     ref, off = lit.load(), lit.copy()
+    pal = lit.getpalette()
     out = off.load()
 
     for name, seed in (("SEED_OUTLINE", SEED_OUTLINE), ("SEED_WIRE", SEED_WIRE)):
@@ -194,35 +204,71 @@ def make_off(lit):
     def awning(p):
         return ax0 <= p[0] < ax1 and awning_top[p[0]] <= p[1] < ay1
 
-    # 2. wall: take the glow off.  Only pixels the glow tinted are replaced (plus everything
-    #    inside the slice); every other pixel is genuine wall and stays exactly as drawn.
+    # 2. wall: take the glow off.
+    #  a) Bricks beside the sign where the glow flattened everything (orange/brown shades) and
+    #     everything inside the slice have lost their texture: fill them with plain brick.
     wall = {p for p, d in dist.items()
             if p[1] <= WALL_YMAX and p not in lit_parts and editable(p) and not awning(p)
             and d <= GLOW_REACH and ref[p] in TINT_COLORS}
     wall |= {p for p in interior if p[1] <= WALL_YMAX and p not in lit_parts and editable(p) and not awning(p)}
-    # Fill from the same row: tile the stretch of plain brick just left of the sign.  Using
-    # the same row keeps horizontal features (the mortar band at y=47..49) running through.
-    rows = {}
+
+    #  b) Farther out the glow only brightens the brick pattern (up to ~25 px from the sign):
+    #     faces go from the plain shade to a brighter one, mortar to the face shade.  Darken it
+    #     back without losing the pattern: rank every brick against its glow-lit neighbours
+    #     (brightest stays brightest) and hand out the plain wall's own face/mortar mix.
+    red = lambda c: pal[c * 3]
+    bricks = {(x, y) for y in range(EDIT[1], WALL_YMAX + 1) for x in range(EDIT[0], EDIT[2])
+              if ref[x, y] in BRICK_SHADES and (x, y) not in lit_parts and (x, y) not in wall
+              and not awning((x, y))}
+    glow = set()
+    for (x, y) in [p for p in bricks if ref[p] == HALO_COLOR]:
+        for dx in range(-GLOW_BAND, GLOW_BAND + 1):
+            for dy in range(-GLOW_BAND, GLOW_BAND + 1):
+                if (x + dx, y + dy) in bricks:
+                    glow.add((x + dx, y + dy))
+    px0, py0, px1, py1 = PLAIN_WALL
+    plain = [ref[x, y] for y in range(py0, py1) for x in range(px0, px1) if ref[x, y] in (9, 10)]
+    mortar_share = plain.count(10) / len(plain)
+    def brightness(p):      # own shade, ties broken by the 3x3 around it (brick faces vs mortar rows)
+        x, y = p
+        w, h = lit.size
+        around = [red(ref[min(max(x + dx, 0), w - 1), min(max(y + dy, 0), h - 1)])
+                  for dx in (-1, 0, 1) for dy in (-1, 0, 1)]
+        return red(ref[p]) + 0.02 * sum(around) / 9
+    bright = {p: brightness(p) for p in glow}
+    half_w, half_h, need = RANK_BOX
+    unglow = {}
+    for p in glow:
+        near = [bright[q] for q in glow if abs(q[0] - p[0]) <= half_w and abs(q[1] - p[1]) <= half_h]
+        if len(near) < need:
+            unglow[p] = 9 if ref[p] == HALO_COLOR else ref[p]
+            continue
+        rank = (sum(v < bright[p] for v in near) + 0.5 * sum(v == bright[p] for v in near)) / len(near)
+        unglow[p] = 10 if rank < mortar_share else 9
+    for p, c in unglow.items():
+        if editable(p):
+            out[p] = c
+
+    #  fill a): tile a strip of plain wall, following the brick rows' climb so mortar lines
+    #  carry on at the right height instead of jumping.
+    def plain_wall(q):
+        return (0 <= q[1] <= WALL_YMAX and q not in wall and q not in lit_parts
+                and ref[q] not in TINT_COLORS and not awning(q))
+    def fill(x, y):
+        x0, x1 = SKY_STRIP if y < SKY_ROWS else STRIP
+        sx = x0 + (x - x0) % (x1 - x0)
+        sy = y + round(BRICK_SLOPE * (x - sx))
+        while sy > WALL_YMAX:                 # ran into the awning: go up a brick row
+            sy -= BRICK_PERIOD
+        if not plain_wall((sx, sy)):          # no clean source on that line: same row instead
+            sx, sy = x0 + (x - x0) % (x1 - x0), y
+        return unglow.get((sx, sy), ref[sx, sy])
     for p in wall:
-        rows.setdefault(p[1], []).append(p[0])
-    for y, xs in rows.items():
-        end = min(xs + [x for (x, yy) in lit_parts if yy == y]) - 1   # plain brick ends where the glow starts
-        start = max(BRICK_X0, end - 24)
-        if y < SKY_ROWS:
-            start = max(start, SKY_X0)
-        if end - start + 1 < WALL_MIN_RUN:
-            start = max(BRICK_X0, end - WALL_MIN_RUN + 1)
-        run = end - start + 1
-        for x in xs:
-            out[x, y] = ref[start + (x - start) % run, y]
-    # The far edge of the glow is faint: it only turns some bricks into the brighter dark red
-    # (8), up to ~25 px from the sign.  The genuine wall has none, so swap them all for the
-    # plain wall shades.
-    for y in range(EDIT[1], WALL_YMAX + 1):
+        out[p] = fill(*p)
+    for y in range(EDIT[1], WALL_YMAX + 1):   # nothing glow-lit may remain
         for x in range(EDIT[0], EDIT[2]):
-            p = (x, y)
-            if out[p] == HALO_COLOR and p not in lit_parts and not awning(p):
-                out[p] = PLAIN_8[(x * 7 + y * 13 + (x * y) % 5) % len(PLAIN_8)]
+            if out[x, y] == HALO_COLOR and (x, y) not in lit_parts and not awning((x, y)):
+                out[x, y] = 9
 
     # 3. awning: the slice's tip hangs over it.  The awning is a pattern of vertical stripes
     #    (period STRIPE_PERIOD) shaded from the top down, so rebuild the stripes under and

@@ -277,11 +277,14 @@ chosen from the console's 60 Hz/50 Hz flag, so it is 2 real seconds on PAL too) 
 long as the splash screen waits for Start.
 
 - `gen_sign_off.py` paints the *unlit* sign from `splash.bmp`: the tubing becomes dull
-  glass, the glow is taken off the brick wall (glow-tinted pixels are replaced with brick
-  from the same row next to the sign, and the faint outer edge of the glow -- a scatter of
-  brighter bricks the plain wall doesn't have -- is toned back to the plain wall shades)
-  and the awning stripes the glow also lit are rebuilt from the neighbouring stripe of the
-  same kind, moved to follow the awning's slope so their top edge and highlight stay put.
+  glass and the glow comes off the wall without losing its brick texture. Bricks the glow
+  flattened (beside the sign, inside the slice) are filled with plain brick, copied along
+  the climb of the brick rows (they rise about 0.1 row per pixel to the right) so mortar
+  lines carry on at the right height; bricks it only brightened farther out are darkened by
+  ranking each one against its neighbours and handing out the plain wall's own face/mortar
+  mix, which keeps the layout. The awning stripes the glow also lit are rebuilt from the
+  neighbouring stripe of the same kind, moved to follow the awning's slope so their top
+  edge and highlight stay put.
   It only uses colours already in the splash palette, so no palette changes are needed. The result is the
   64-tile block `sign_off.pic` (8 x 8 tiles, location and size in `sign_off.h`; the size must be even because the converter pads bitmaps to a multiple of 16 px).
 - The splash is a 1:1 tilemap (`-R`, no tile reduction: map cell N shows tile N). The unlit
