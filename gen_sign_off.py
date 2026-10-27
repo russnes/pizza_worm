@@ -14,12 +14,13 @@ This script reads splash.bmp and writes
 
 How the "off" picture is made (only palette entries that already exist are used):
   * the neon tubing (slice outline, curly wire, pepperoni rings) becomes dull, dark glass
-  * the glow is taken off the wall without losing the brick texture: bricks the glow
-    flattened (next to the sign and inside the slice) are filled with plain brick, copied
-    along the climb of the brick rows so mortar lines carry on at the right height, and the
-    glow-brightened bricks farther out are darkened back by ranking each one against its
-    neighbours and handing out the plain wall's own face/mortar mix (so the layout is kept,
-    just darker); every other wall pixel keeps its drawn colour
+  * the glow is taken off the wall without losing the brick texture: everything the glow
+    touched (the bricks beside the sign, inside the slice and the brightened ones farther
+    out) is rebuilt from blocks of the plain wall itself, so it has the same bricks, black
+    mortar joints and shade mix as the wall around it.  The blocks follow the climb of the
+    brick rows, and each is placed at the offset whose pattern agrees best with the lit
+    picture, so the courses sit at their true heights; every other wall pixel keeps its
+    drawn colour
   * the awning under the slice's tip is rebuilt from the neighbouring stripe of the same
     kind, moved to follow the awning's slope (it rises to the right), so the stripes keep
     their colours, shading, top edge and yellow highlight
@@ -81,6 +82,9 @@ GLOW_BAND = 4                    # bricks this close to a glow-lit (8) brick cou
 RANK_BOX = (8, 3, 15)            # darkening ranks each brick against the glow-lit bricks within
                                  # +-8 px sideways and +-3 rows (needs at least 15 of them)
 STRIP = (186, 206)               # plain wall tiled into the glow-flattened bricks beside the sign
+SYN_EXEMPLAR = (184, 10, 195, 45)   # plain, unlit brick wall (x0, y0, x1, y1) used as the texture source
+SYN_BLOCK = 8                    # the formerly lit wall is built from blocks of this many columns
+SYN_YMAX = 44                    # rows 45..49 (the dark mortar band under the bricks) keep the plain fill
 SKY_STRIP = (206, 218)           # ... and for the top rows, where the strip's left is dark sky
 NAVY = (6, 11, 13)               # dark-gap colours, never touched around the wire
 SKY_ROWS = 10                    # the top rows are black/navy left of x=206; bricks start there
@@ -206,7 +210,7 @@ def make_off(lit):
 
     # 2. wall: take the glow off.
     #  a) Bricks beside the sign where the glow flattened everything (orange/brown shades) and
-    #     everything inside the slice have lost their texture: fill them with plain brick.
+    #     everything inside the slice have lost their texture completely.
     wall = {p for p, d in dist.items()
             if p[1] <= WALL_YMAX and p not in lit_parts and editable(p) and not awning(p)
             and d <= GLOW_REACH and ref[p] in TINT_COLORS}
@@ -216,6 +220,8 @@ def make_off(lit):
     #     faces go from the plain shade to a brighter one, mortar to the face shade.  Darken it
     #     back without losing the pattern: rank every brick against its glow-lit neighbours
     #     (brightest stays brightest) and hand out the plain wall's own face/mortar mix.
+    #     (Step c) below rebuilds the rows above SYN_YMAX in a better way; this and fill a)
+    #     remain for the dark mortar band under the bricks, rows SYN_YMAX+1 .. WALL_YMAX.)
     red = lambda c: pal[c * 3]
     bricks = {(x, y) for y in range(EDIT[1], WALL_YMAX + 1) for x in range(EDIT[0], EDIT[2])
               if ref[x, y] in BRICK_SHADES and (x, y) not in lit_parts and (x, y) not in wall
@@ -269,6 +275,67 @@ def make_off(lit):
         for x in range(EDIT[0], EDIT[2]):
             if out[x, y] == HALO_COLOR and (x, y) not in lit_parts and not awning((x, y)):
                 out[x, y] = 9
+
+    #  c) Match the plain wall's texture style.  The glow brightened the black mortar joints
+    #     into lighter shades, so nothing in the lit picture can bring them back, and where
+    #     the glow is strongest the picture is almost solid.  So rebuild everything the glow
+    #     touched from blocks of the plain wall itself (same joints, same shade mix), placed
+    #     along the slope of the brick rows and, for each block of columns, at the offset
+    #     (and orientation) whose pattern agrees best with the lit bricks that still show it.
+    ex0, ey0, ex1, ey1 = SYN_EXEMPLAR
+    ew, eh = ex1 - ex0, ey1 - ey0
+    shade = lambda c: 9 if c == HALO_COLOR else c
+    ex = [[shade(ref[ex0 + u, ey0 + v]) for u in range(ew)] for v in range(eh)]
+    textures = [ex, [row[::-1] for row in ex[::-1]]]      # as is, and turned 180 degrees (keeps the slope)
+    def tex(t, u, v):
+        v = v % eh if eh else v
+        return textures[t][v][u]
+    zone = {p for p in (glow | wall) if p[1] <= SYN_YMAX and editable(p)}
+    guide = {p for p in glow if p[1] <= SYN_YMAX and p in zone}        # lit bricks that still show the pattern
+    seed = 20240601
+    def rnd(n):
+        nonlocal seed
+        seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+        return (seed >> 8) % n
+    def source_row(y, dy):         # row of the exemplar for target row y, wrapping by ~2 brick periods
+        v = y + dy - ey0
+        while v < 0:
+            v += 9
+        while v >= eh:
+            v -= 9
+        return v
+    synth = {}
+    for bx in range(EDIT[0], EDIT[2], SYN_BLOCK):
+        cols = range(bx, min(bx + SYN_BLOCK, EDIT[2]))
+        pts = [p for p in zone if p[0] in cols]
+        if not pts:
+            continue
+        info = [p for p in guide if p[0] in cols]
+        best, best_score = [], None
+        for t in (0, 1):
+            for sx0 in range(ew - SYN_BLOCK + 1):
+                dy0 = round(BRICK_SLOPE * (bx - (ex0 + sx0)))
+                for dy in (dy0 - 1, dy0, dy0 + 1):
+                    cand = lambda p: tex(t, sx0 + (p[0] - bx), source_row(p[1], dy))
+                    if len(info) >= 25:
+                        a = [red(ref[p]) for p in info]
+                        b = [red(cand(p)) for p in info]
+                        ma, mb = sum(a) / len(a), sum(b) / len(b)
+                        va = sum((x - ma) ** 2 for x in a); vb = sum((x - mb) ** 2 for x in b)
+                        score = (sum((x - ma) * (y - mb) for x, y in zip(a, b)) / (va * vb) ** 0.5
+                                 if va and vb else 0.0)
+                    else:
+                        score = 0.0
+                    score -= 0.08 * abs(dy - dy0)          # prefer the slope's own course line
+                    if best_score is None or score > best_score + 1e-9:
+                        best, best_score = [(t, sx0, dy)], score
+                    elif abs(score - best_score) <= 0.02:
+                        best.append((t, sx0, dy))
+        t, sx0, dy = best[rnd(len(best))]
+        for p in pts:
+            synth[p] = tex(t, sx0 + (p[0] - bx), source_row(p[1], dy))
+    for p, c in synth.items():
+        out[p] = c
 
     # 3. awning: the slice's tip hangs over it.  The awning is a pattern of vertical stripes
     #    (period STRIPE_PERIOD) shaded from the top down, so rebuild the stripes under and
